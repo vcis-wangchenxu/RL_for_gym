@@ -14,10 +14,39 @@ from models import DDPGPolicyNet, DDPGQnet
 from memory import ReplayBuffer
 
 class DDPGAgent:
-    
+    """
+    A class representing a Deep Deterministic Policy Gradient (DDPG) agent.
+
+    Attributes:
+        actor (nn.Module): The actor network that maps states to actions.
+        target_actor (nn.Module): The target actor network for stable training.
+        actor_optimizer (torch.optim.Optimizer): Optimizer for the actor network.
+        critic (nn.Module): The critic network that evaluates state-action pairs.
+        target_critic (nn.Module): The target critic network for stable training.
+        critic_optimizer (torch.optim.Optimizer): Optimizer for the critic network.
+        criterion (nn.Module): Loss function for the critic network.
+        gamma (float): Discount factor for future rewards.
+        tau (float): Soft update parameter for target networks.
+        device (torch.device): Device to run the computations (CPU or GPU).
+        count (int): Counter for the number of updates performed.
+    """
     def __init__(self, state_dim: int, hidden_dim: int, action_dim: int, action_bound: float, 
                  actor_learning_rate: float, critic_learning_rate: float, gamma: float, 
                  tau: float, device: torch.device):
+        """
+        Initializes the DDPG agent with actor and critic networks, optimizers, and hyperparameters.
+
+        Args:
+            state_dim (int): Dimension of the state space.
+            hidden_dim (int): Number of hidden units in the networks.
+            action_dim (int): Dimension of the action space.
+            action_bound (float): Maximum absolute value for actions.
+            actor_learning_rate (float): Learning rate for the actor network.
+            critic_learning_rate (float): Learning rate for the critic network.
+            gamma (float): Discount factor for future rewards.
+            tau (float): Soft update parameter for target networks.
+            device (torch.device): Device to run the computations (CPU or GPU).
+        """
         self.actor = DDPGPolicyNet(state_dim, hidden_dim, action_dim, action_bound).to(device)
         self.target_actor = DDPGPolicyNet(state_dim, hidden_dim, action_dim, action_bound).to(device)
         self.target_actor.load_state_dict(self.actor.state_dict())
@@ -36,6 +65,16 @@ class DDPGAgent:
 
     @torch.no_grad()
     def take_action(self, state: np.ndarray, exploration_noise: float) -> np.ndarray:
+        """
+        Selects an action based on the current state and adds exploration noise.
+
+        Args:
+            state (np.ndarray): Current state of the environment.
+            exploration_noise (float): Standard deviation of the Gaussian noise.
+
+        Returns:
+            np.ndarray: Action to be taken, clipped within the action bounds.
+        """
         state_tensor = torch.tensor(np.array([state]), dtype=torch.float).to(self.device)
         action = self.actor(state_tensor).cpu().numpy()[0]
         noise = np.random.normal(0, exploration_noise, size=action.shape)
@@ -43,15 +82,45 @@ class DDPGAgent:
     
     @torch.no_grad()
     def act_deterministic(self, state: np.ndarray) -> np.ndarray:
+        """
+        Selects an action deterministically based on the current state.
+
+        Args:
+            state (np.ndarray): Current state of the environment.
+
+        Returns:
+            np.ndarray: Deterministic action to be taken.
+        """
         state_tensor = torch.tensor(np.array([state]), dtype=torch.float).to(self.device)
         action = self.actor(state_tensor).cpu().numpy()[0]
         return action
     
     def soft_update(self, net: nn.Module, target_net: nn.Module):
+        """
+        Performs a soft update of the target network parameters.
+
+        Args:
+            net (nn.Module): The source network.
+            target_net (nn.Module): The target network to be updated.
+        """
         for param, target_param in zip(net.parameters(), target_net.parameters()):
             target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
     
     def update(self, transition_dict: Dict[str, any]) -> Tuple[float, float]:
+        """
+        Updates the actor and critic networks using a batch of transitions.
+
+        Args:
+            transition_dict (Dict[str, any]): A dictionary containing:
+                - 'states': Batch of states.
+                - 'actions': Batch of actions.
+                - 'rewards': Batch of rewards.
+                - 'next_states': Batch of next states.
+                - 'dones': Batch of done flags.
+
+        Returns:
+            Tuple[float, float]: Actor loss and critic loss.
+        """
         states = torch.tensor(transition_dict['states'], dtype=torch.float).to(self.device)
         actions = torch.tensor(np.array(transition_dict['actions']), dtype=torch.float).to(self.device)
         rewards = torch.tensor(transition_dict['rewards'], dtype=torch.float).unsqueeze(1).to(self.device)
@@ -81,6 +150,17 @@ class DDPGAgent:
         return actor_loss.item(), critic_loss.item()
 
 def evaluate(agent: DDPGAgent, env: gym.Env, n_episodes: int = 5) -> float:
+    """
+    Evaluates the performance of the DDPG agent in the given environment.
+
+    Args:
+        agent (DDPGAgent): The DDPG agent to be evaluated.
+        env (gym.Env): The environment in which the agent will be evaluated.
+        n_episodes (int, optional): Number of episodes to run for evaluation. Defaults to 5.
+
+    Returns:
+        float: The average reward obtained by the agent over the evaluation episodes.
+    """
     total_reward = 0.0
     for _ in range(n_episodes):
         state, _ = env.reset()
@@ -97,6 +177,31 @@ def evaluate(agent: DDPGAgent, env: gym.Env, n_episodes: int = 5) -> float:
 
 def train_DDPG(agent: DDPGAgent, env: gym.Env, config: Dict[str, any], 
                replay_buffer: ReplayBuffer) -> List[Dict[str, any]]:
+    """
+    Trains the DDPG agent in the specified environment.
+
+    Args:
+        agent (DDPGAgent): The DDPG agent to be trained.
+        env (gym.Env): The environment in which the agent will be trained.
+        config (Dict[str, any]): Configuration dictionary containing training parameters such as:
+            - 'total_timesteps': Total number of timesteps for training.
+            - 'seed': Random seed for reproducibility.
+            - 'exploration_noise': Standard deviation of the Gaussian noise for exploration.
+            - 'learning_starts': Minimum number of transitions in the replay buffer before training starts.
+            - 'batch_size': Batch size for sampling from the replay buffer.
+            - 'eval_freq': Frequency (in episodes) for evaluation.
+        replay_buffer (ReplayBuffer): Replay buffer to store and sample transitions.
+
+    Returns:
+        List[Dict[str, any]]: A list of dictionaries containing training metrics:
+            - 'steps': Total steps taken.
+            - 'reward': Episode return.
+            - 'seed': Random seed used.
+        List[Dict[str, any]]: A list of dictionaries containing evaluation metrics:
+            - 'steps': Total steps taken.
+            - 'reward': Average evaluation reward.
+            - 'seed': Random seed used.
+    """
     print("--- Start DDPG Training ---")
     return_list: List[Dict] = []
     return_list_eval: List[Dict] = []
